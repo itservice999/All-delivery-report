@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; connect-src https://*.supabase.co; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>รีพอร์ตส่งสื่อ</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--ink:#1c2330;--mute:#6b7585;--line:#e2e5ea;--pri:#2457d6;--pri-d:#1b44a8;--ok:#1e8e5a;--err:#c93434;--chip:#eef2fb;--head:#d9d9d9}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Sarabun","Noto Sans Thai",system-ui,sans-serif}
+button,input,select{font:inherit}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:10px 20px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+header h1{font-size:18px;margin:0 12px 0 0}
+header .sp{flex:1}
+header .who{font-size:13px;color:var(--mute)}
+main{max-width:1280px;margin:0 auto;padding:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+.btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap}
+.btn:hover{background:#f0f2f6}
+.btn.on{background:var(--chip);border-color:#b9c9f0}
+.btn.pri{background:var(--pri);border-color:var(--pri);color:#fff}
+.btn.pri:hover{background:var(--pri-d)}
+.btn.warn{background:var(--err);border-color:var(--err);color:#fff}
+.btn.sm{padding:3px 10px;font-size:13px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+.row.mb{margin-bottom:14px}
+.grow{flex:1;min-width:220px}
+.f{display:flex;flex-direction:column;font-size:13px;color:var(--mute);gap:4px;min-width:150px}
+.f input,.f select{border:1px solid var(--line);border-radius:8px;padding:8px 10px;color:var(--ink);background:#fff;width:100%}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.muted{color:var(--mute)}
+.count{margin:6px 0 8px;color:var(--mute);font-size:13px}
+a.link{color:var(--pri);cursor:pointer;text-decoration:underline;background:none;border:none;padding:0;font:inherit;text-align:left}
+.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff;max-height:70vh}
+table{border-collapse:collapse;width:100%}
+th,td{padding:8px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+th{background:#f8f9fb;font-size:13px;color:var(--mute);position:sticky;top:0;z-index:1;white-space:nowrap}
+table.sheet th,table.sheet td{border:1px solid #bdbdbd;text-align:center;padding:6px 10px}
+table.sheet th{background:var(--head);color:var(--ink);font-weight:700}
+table.sheet td.l{text-align:left}
+table.sheet td.online{color:var(--ok);font-weight:700;font-style:italic}
+table.sheet td.mediacell{padding:4px;background:#fff;min-width:190px}
+table.sheet td.mediacell img{max-width:100%;max-height:170px;display:block;margin:auto}
+table.sheet input[type=text]{width:100%;min-width:160px;border:1px solid var(--line);border-radius:6px;padding:4px 8px}
+input.cb{width:20px;height:20px;cursor:pointer}
+input.cb.ok{accent-color:#1e8e5a}
+input.cb.bad{accent-color:#c93434}
+input.cb:disabled{cursor:default;opacity:1}
+.overlay{position:fixed;inset:0;background:rgba(15,20,30,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
+.modal{background:#fff;border-radius:14px;width:min(560px,100%);max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 50px rgba(0,0,0,.25)}
+.modal.wide{width:min(1180px,100%)}
+.modal-h{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line)}
+.modal-h h2{margin:0;font-size:17px}
+.x{border:none;background:none;font-size:24px;line-height:1;cursor:pointer;color:var(--mute)}
+.modal-b{padding:16px 18px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.modal-f{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center}
+.modal-f .sp{flex:1;color:var(--mute);font-size:13px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 14px;cursor:pointer}
+.chip.on{background:var(--pri);border-color:var(--pri);color:#fff}
+.login{max-width:360px;margin:12vh auto}
+.login h1{font-size:20px;margin:0 0 14px}
+.login form{display:flex;flex-direction:column;gap:12px}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:30;display:flex;flex-direction:column;gap:8px}
+.t{background:#1c2330;color:#fff;padding:10px 16px;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.25);max-width:90vw}
+.t.err{background:var(--err)}
+.note{font-size:13px;color:var(--mute);background:#f8f9fb;border-radius:8px;padding:8px 10px}
+.note.warn{background:#fff6e5;color:#8a5a00}
+.imgprev{max-width:260px;max-height:200px;border:1px solid var(--line);border-radius:8px;display:block;margin-top:6px}
+.badge{display:inline-block;border-radius:999px;padding:1px 10px;font-size:12px;background:#e6f4ec;color:#1e8e5a}
+.badge.bad{background:#fbe9e9;color:#c93434}
+h2.sec{font-size:16px;margin:0 0 10px}
+@media print{header,.noprint{display:none}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="modals"></div>
+<div id="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
