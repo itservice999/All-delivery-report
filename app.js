@@ -15,6 +15,9 @@ const state = {
 };
 
 /* ============================ helpers ============================ */
+// replaceChildren แสดง null/false เป็นข้อความ "null"/"false" -> กรองออกก่อนเสมอ
+{ const _rc = Element.prototype.replaceChildren;
+  Element.prototype.replaceChildren = function (...a) { return _rc.apply(this, a.flat(Infinity).filter(x => x != null && x !== false)); }; }
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props || {})) {
@@ -1387,7 +1390,7 @@ function openImportGroup(t) {
     try {
       const r = await parseRosterFile(fl);
       if (!r) return out.replaceChildren(h('div', { class: 'note warn' }, 'ไม่พบหัวตารางที่มีคอลัมน์ Store Name (หรือ ชื่อสาขา) ในไฟล์นี้'));
-      fileHasShelf = r.rows.some(x => x.hasShelfCol);
+      fileHasShelf = r.rows.some(x => clean(x.shelf));   // มี Shelf จริงอย่างน้อย 1 แถวเท่านั้น (หัวคอลัมน์ว่างไม่นับ)
       out.dataset.sheet = r.sheet; build(r.rows);
       toast(`อ่านแท็บ "${r.sheet}" ได้ ${r.rows.length} แถว`);
     } catch (err) { out.replaceChildren(h('div', { class: 'note warn' }, 'อ่านไฟล์ไม่สำเร็จ: ' + errMsg(err))); }
