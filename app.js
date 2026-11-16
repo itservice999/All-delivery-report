@@ -364,7 +364,9 @@ async function buildWorkbook(items) {
       { views: [{ state: 'frozen', ySplit: 2 }], pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
     [6, 26, 9, 16, 14, 12, 12, 18, 11, 22, 22, 10, 10, 34].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
     XL_HEAD.forEach((t, i) => { ws.mergeCells(1, i + 1, 2, i + 1); ws.getCell(1, i + 1).value = t; });
-    ws.mergeCells('J1:K1'); ws.getCell('J1').value = `${c.media_name}\n${c.job_no || ''} (เลขงาน)`;
+    const tys = uniqList(rows.map(r => clean(r.screen_type)).filter(Boolean));
+    const pre = tys.length && !lc(c.media_name).startsWith(lc(tys[0]) + ' :') ? tys.join(', ') + ' : ' : '';
+    ws.mergeCells('J1:K1'); ws.getCell('J1').value = pre + c.media_name + (c.job_no ? `\n(${c.job_no})` : '');
     ws.getCell('J2').value = `วันที่รับแจ้ง\n(${fmtDate(c.received_date, true)})`;
     ws.getCell('K2').value = `วันที่ดำเนินการเสร็จ\n(${fmtDate(c.done_date, true)})`;
     ws.mergeCells('L1:M1'); ws.getCell('L1').value = 'สถานะการอัพสื่อ';
@@ -375,7 +377,7 @@ async function buildWorkbook(items) {
       cell.fill = fill; cell.border = border; cell.font = { bold: true, size: 11 };
       cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
     }
-    ws.getRow(1).height = 36; ws.getRow(2).height = 40;
+    ws.getRow(1).height = 48; ws.getRow(2).height = 40;
 
     const total = Math.max(rows.length, 5);
     for (let i = 0; i < total; i++) {
@@ -470,31 +472,30 @@ function findCols(ws, maxRow = 4, maxCol = 24) {
 }
 const OLD_MAP = { no: 1, store: 2, count: 3, prov: 4, type: 5, device: 6, status: 7, ok: 10, fail: 11, note: 12 };
 
+// อ่าน 1 แท็บ -> คืนเป็นลิสต์ของสื่อ (แท็บเดียวมีได้หลายสื่อวางต่อกันในแนวนอน ใช้รายชื่อสาขาชุดเดียวกัน)
 function parseSheet(wb, ws) {
-  if (ws.rowCount < 3) return null;
-  const warnings = [];
+  if (ws.rowCount < 3) return [];
   const det = findCols(ws, 3);
   const detected = det.map.store != null && det.map.type != null;
   const M = detected ? { ...OLD_MAP, ...det.map } : OLD_MAP;
   const start = detected ? Math.max(det.last + 1, 3) : 3;
-  // ตำแหน่งข้อมูลสื่อ: หาเซลล์ที่เขียนว่า "(เลขงาน)" ในแถว 1
-  let mediaCol = 8;
-  for (let c = 1; c <= 24; c++) if (/เลขงาน/.test(ctext(ws.getCell(1, c)))) { mediaCol = c; break; }
-  const lines = ctext(ws.getCell(1, mediaCol)).split(/\r?\n/).map(clean).filter(Boolean);
-  let job_no = '', media = '';
-  for (const ln of lines) {
-    const m = ln.match(/([A-Za-z]{2,}\s*-?\s*\d+)/);
-    if (m && !job_no) job_no = m[1].replace(/\s+/g, '');
-    else if (!media && !/เลขงาน/.test(ln)) media = ln;
-  }
-  if (media && !media.includes('(')) media = clean(media.replace(/\)\s*$/, ''));
-  if (!media) { media = ws.name || ''; warnings.push('ไม่พบชื่อสื่อในหัวตาราง ใช้ชื่อแท็บแทน กรุณาตรวจ'); }
-  const received_date = parseThaiDate(ctext(ws.getCell(2, mediaCol)));
-  const done_date = parseThaiDate(ctext(ws.getCell(2, mediaCol + 1)));
-  if (!received_date) warnings.push('อ่านวันที่รับแจ้งไม่ได้ กรุณากรอกเอง');
-  if (!done_date) warnings.push('อ่านวันที่เสร็จไม่ได้ กรุณากรอกเอง');
-
-  const rows = []; let prevNo = null, fixed = 0, both = 0;
+  const T = (r, c) => clean(ctext(ws.getCell(r, c)));
+  // ---- หาบล็อกสื่อ: ทุกเซลล์แถว 2 ที่เขียนว่า "วันที่รับแจ้ง" = 1 สื่อ ----
+  let starts = [];
+  for (let c = 1; c <= 60; c++) if (/วันที่รับแจ้ง/.test(T(2, c))) starts.push(c);
+  if (!starts.length) { let mc = 0; for (let c = 1; c <= 24 && !mc; c++) if (/เลขงาน/.test(T(1, c))) mc = c; starts = [mc || 8]; }
+  const multi = starts.length > 1;
+  const blocks = starts.map((sc, k) => {
+    const end = (starts[k + 1] || 61) - 1;
+    const find = (re, from, rows) => { for (let c = from; c <= end; c++) for (const r of rows) if (re.test(T(r, c))) return c; return 0; };
+    const ok = find(/^สำเร็จ$/, sc + 2, [2]) || (k === 0 ? M.ok : 0);
+    const fail = find(/^ไม่สำเร็จ$/, sc + 2, [2]) || (k === 0 ? M.fail : 0);
+    const note = find(/^หมายเหตุ$/, Math.max(ok, fail, sc + 1) + 1, [1, 2]) || (k === 0 ? M.note : 0);
+    return { sc, end, ok, fail, note };
+  });
+  const dateCol = (r, sc) => parseThaiDate(ctext(ws.getCell(r, sc)));
+  // ---- แถวสาขา (ใช้ร่วมกันทุกสื่อ) ----
+  const base = []; let prevNo = null, fixed = 0;
   for (let r = start; r <= ws.rowCount; r++) {
     const g = c => (c ? ws.getCell(r, c) : { value: null });
     const store = clean(ctext(g(M.store))), cnt = clean(ctext(g(M.count))), prov = ctext(g(M.prov)), type = clean(ctext(g(M.type)));
@@ -504,30 +505,57 @@ function parseSheet(wb, ws) {
     if (store_no == null) store_no = prevNo; else prevNo = store_no;
     const province = fixThai(prov);
     if (province !== clean(prov)) fixed++;
-    let success = cbool(g(M.ok)), fail = cbool(g(M.fail));
-    if (success && fail) { both++; success = false; }
     const n = parseInt(cnt, 10);
-    rows.push({
+    base.push({ r, row: {
       store_no, store_name: store, screen_count: Number.isFinite(n) ? Math.min(99, Math.max(0, n)) : 1,
       province, screen_type: type || 'ไม่ระบุ', shelf: clean(ctext(g(M.shelf))), res: clean(ctext(g(M.res))), tags: [],
-      device_id: clean(ctext(g(M.device))), screen_status: clean(ctext(g(M.status))),
-      success, fail, note: clean(ctext(g(M.note)))
-    });
+      device_id: clean(ctext(g(M.device))), screen_status: clean(ctext(g(M.status)))
+    } });
   }
-  if (!rows.length) return null;
-  if (fixed) warnings.push(`แก้ตัวสะกดซ้ำในชื่อจังหวัดให้อัตโนมัติ ${fixed} แถว (เช่น "อุดรธานีี")`);
-  if (both) warnings.push(`มี ${both} แถวที่ติ๊กทั้งสำเร็จและไม่สำเร็จ ระบบถือเป็น "ไม่สำเร็จ"`);
-  let blob = null;
-  try {
-    const imgs = ws.getImages();
-    if (imgs.length) {
-      const im = wb.getImage(imgs[0].imageId);
-      const ext = String(im.extension || 'jpeg').replace('jpg', 'jpeg');
-      blob = new Blob([im.buffer], { type: 'image/' + ext });
-      if (imgs.length > 1) warnings.push(`พบรูป ${imgs.length} รูป ใช้รูปแรกเท่านั้น`);
-    } else warnings.push('ไม่พบรูปสื่อในแท็บนี้');
-  } catch (e) { warnings.push('อ่านรูปไม่สำเร็จ'); }
-  return { name: ws.name, include: true, media_name: media, job_no, received_date, done_date, reporter: '', rows, blob, warnings };
+  if (!base.length) return [];
+  let imgs = [];
+  try { imgs = ws.getImages(); } catch (e) { /* อ่านรูปไม่ได้ก็ข้าม */ }
+  const out = [];
+  blocks.forEach((b, k) => {
+    const warnings = [];
+    const lines = ctext(ws.getCell(1, b.sc)).split(/\r?\n/).map(clean).filter(Boolean);
+    let job_no = '', media = '';
+    const codeRe = /^\(?\s*([A-Za-z]{2,6}\s*-?\s*\d{3,}[A-Za-z0-9-]*)\s*\)?\s*(\(เลขงาน\))?$/;
+    const rest = [];
+    for (const ln of lines) { const m = ln.match(codeRe); if (m && !job_no) job_no = m[1].replace(/\s+/g, ''); else rest.push(ln); }
+    if (!job_no) for (const ln of rest) { const m = ln.match(/([A-Za-z]{2,6}\s*-?\s*\d{3,})\s*\(เลขงาน\)/); if (m) { job_no = m[1].replace(/\s+/g, ''); break; } }
+    media = rest.find(ln => !/เลขงาน/.test(ln)) || '';
+    // ตัดคำนำหน้า "LED : " / "LED, Acc Wall : " เฉพาะที่เป็นชื่อประเภทจอจริง
+    { const known = uniqList([...(typeof brandTypes === 'function' ? brandTypes().map(t => t.name) : []), 'LED', 'TV', 'Digital Poster', 'Acc Wall', 'VDO Wall']).map(x => lc(clean(x)));
+      const pm = media.match(/^([^:：]{1,60}?)\s*[:：]\s+(.+)$/);
+      if (pm && pm[1].split(/\s*[,&+/]\s*/).every(x => known.includes(lc(clean(x))))) media = clean(pm[2]); }
+    if (media && !media.includes('(')) media = clean(media.replace(/\)\s*$/, ''));
+    if (!media) { media = (ws.name || '') + (multi ? ` (สื่อ ${k + 1})` : ''); warnings.push('ไม่พบชื่อสื่อในหัวตาราง ใช้ชื่อแท็บแทน กรุณาตรวจ'); }
+    const received_date = dateCol(2, b.sc), done_date = dateCol(2, b.sc + 1);
+    if (!received_date) warnings.push('อ่านวันที่รับแจ้งไม่ได้ กรุณากรอกเอง');
+    if (!done_date) warnings.push('อ่านวันที่เสร็จไม่ได้ กรุณากรอกเอง');
+    let both = 0;
+    const rows = base.map(({ r, row }) => {
+      let success = b.ok ? cbool(ws.getCell(r, b.ok)) : false, fail = b.fail ? cbool(ws.getCell(r, b.fail)) : false;
+      if (success && fail) { both++; success = false; }
+      return { ...row, success, fail, note: b.note ? clean(ctext(ws.getCell(r, b.note))) : '' };
+    });
+    if (fixed && k === 0) warnings.push(`แก้ตัวสะกดซ้ำในชื่อจังหวัดให้อัตโนมัติ ${fixed} แถว (เช่น "อุดรธานีี")`);
+    if (both) warnings.push(`มี ${both} แถวที่ติ๊กทั้งสำเร็จและไม่สำเร็จ ระบบถือเป็น "ไม่สำเร็จ"`);
+    let blob = null;
+    try {
+      // หลายสื่อ: ใช้รูปที่วางอยู่ในช่วงคอลัมน์ของสื่อนั้น / สื่อเดียว: ใช้รูปแรก
+      const mine = multi ? imgs.filter(im => { const col = Math.floor((im.range && im.range.tl && (im.range.tl.nativeCol != null ? im.range.tl.nativeCol : im.range.tl.col)) || 0) + 1; return col >= b.sc && col <= b.end; }) : imgs;
+      if (mine.length) {
+        const im = wb.getImage(mine[0].imageId);
+        const ext = String(im.extension || 'jpeg').replace('jpg', 'jpeg');
+        blob = new Blob([im.buffer], { type: 'image/' + ext });
+        if (mine.length > 1) warnings.push(`พบรูป ${mine.length} รูป ใช้รูปแรกเท่านั้น`);
+      } else warnings.push('ไม่พบรูปสื่อ' + (multi ? 'ของสื่อนี้' : 'ในแท็บนี้'));
+    } catch (e) { warnings.push('อ่านรูปไม่สำเร็จ'); }
+    out.push({ name: ws.name + (multi ? ` • สื่อ ${k + 1}` : ''), include: true, media_name: media, job_no, received_date, done_date, reporter: '', rows, blob, warnings });
+  });
+  return out;
 }
 async function loadWorkbook(file) {
   if (file.size > 20 * 1024 * 1024) throw new Error('ไฟล์ใหญ่เกิน 20 MB');
@@ -539,7 +567,7 @@ async function loadWorkbook(file) {
 async function parseWorkbook(file) {
   const wb = await loadWorkbook(file);
   const out = [];
-  for (const ws of wb.worksheets.slice(0, 60)) { const s = parseSheet(wb, ws); if (s) out.push(s); }
+  for (const ws of wb.worksheets.slice(0, 60)) out.push(...parseSheet(wb, ws));
   return out;
 }
 
@@ -1109,7 +1137,7 @@ async function viewImport() {
   return h('div', null,
     h('div', { class: 'card' },
       h('h2', { class: 'sec' }, `นำเข้าจากไฟล์ชีตเดิม (แบรนด์ ${state.brand})`),
-      h('p', { class: 'muted' }, 'ใน Google Sheet กด ไฟล์ > ดาวน์โหลด > Microsoft Excel (.xlsx) แล้วเลือกไฟล์ที่นี่ 1 แท็บ = 1 งาน ระบบแสดงตัวอย่างให้ตรวจก่อนบันทึกจริง (ไฟล์ที่ Export จากเว็บนี้ก็นำกลับเข้ามาได้)'),
+      h('p', { class: 'muted' }, 'ใน Google Sheet กด ไฟล์ > ดาวน์โหลด > Microsoft Excel (.xlsx) แล้วเลือกไฟล์ที่นี่ 1 แท็บ = 1 งาน (ถ้าแท็บเดียวมีหลายสื่อวางต่อกัน ระบบแยกให้เป็นหลายงาน) ระบบแสดงตัวอย่างให้ตรวจก่อนบันทึกจริง (ไฟล์ที่ Export จากเว็บนี้ก็นำกลับเข้ามาได้)'),
       file),
     box);
 }
