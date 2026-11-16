@@ -246,6 +246,15 @@ const api = {
     const paths = sel.data.map(x => x.image_path).filter(Boolean);
     if (paths.length) { const r = await sb.storage.from(BUCKET).remove(paths); if (r.error) throw r.error; }
   },
+  async exportedIds(ids) {
+    const out = new Set();
+    for (let i = 0; i < ids.length; i += 200) {
+      const { data, error } = await sb.from('dr_exports').select('case_id').in('case_id', ids.slice(i, i + 200));
+      if (error) throw error;
+      data.forEach(x => out.add(x.case_id));
+    }
+    return out;
+  },
   async markExported(ids) {
     if (!ids.length) return;
     const { error } = await sb.from('dr_exports').upsert(ids.map(id => ({ case_id: id, exported_at: new Date().toISOString() })), { onConflict: 'case_id' });
@@ -729,10 +738,33 @@ function rowsTable(rows, { editable = false, onChange, onRemove, media } = {}) {
 const tagBadges = c => [...(c.types || []).map(x => h('span', { class: 'badge tag' }, x)), ...(c.tags || []).map(x => h('span', { class: 'badge tag2' }, x))];
 
 /* ---------- รายการ ---------- */
+/* ---------- ลบสื่อ (ใช้ร่วมกัน: หน้ารายการ / หน้ารายละเอียด / ตั้งค่า) เฉพาะแอดมิน ---------- */
+async function openDeleteCases(chosen, onDone) {
+  if (!state.isAdmin) return toast('เฉพาะแอดมินที่ลบสื่อได้', true);
+  if (!chosen.length) return;
+  let done;
+  try { done = await api.exportedIds(chosen.map(x => x.id)); } catch (e) { done = new Set(chosen.filter(x => x.exported_at).map(x => x.id)); }
+  const un = chosen.filter(x => !done.has(x.id));
+  let c;
+  const expBtn = h('button', { class: 'btn sm', onClick: async () => {
+    expBtn.disabled = true; toast(`กำลังสร้างไฟล์ ${chosen.length} ชีต…`);
+    try { await exportCasesById(chosen.map(x => x.id), `${safeName(state.brand)}_สำรองก่อนลบ_${todayISO()}.xlsx`); c.close(); openDeleteCases(chosen, onDone); }
+    catch (e) { toast('ส่งออกไม่สำเร็จ: ' + errMsg(e), true); expBtn.disabled = false; }
+  } }, 'Export ก่อนลบ');
+  c = openModal({ title: chosen.length === 1 ? 'ลบสื่อนี้?' : 'ลบสื่อที่เลือก?',
+    body: [h('div', null, chosen.length === 1 ? `จะลบ "${chosen[0].media_name}" พร้อมรูปและข้อมูลทั้งหมด ลบแล้วกู้คืนไม่ได้` : `จะลบ ${chosen.length} สื่อ พร้อมรูปและข้อมูลทั้งหมด ลบแล้วกู้คืนไม่ได้`),
+      un.length ? h('div', { class: 'warnbox' }, `มี ${un.length} สื่อที่ยังไม่ได้ Export`, h('div', { style: 'margin-top:6px' }, expBtn)) : h('div', { class: 'muted' }, 'ทุกสื่อที่เลือก Export แล้ว')],
+    footer: [h('button', { class: 'btn', onClick: () => c.close() }, 'ยกเลิก'), h('button', { class: 'btn warn', onClick: async () => {
+      try { await api.deleteCases(chosen.map(x => x.id)); state.cases = []; c.close(); toast(`ลบแล้ว ${chosen.length} สื่อ`); await refreshUsage(); onDone && onDone(); }
+      catch (e) { toast('ลบไม่สำเร็จ: ' + errMsg(e), true); }
+    } }, 'ลบถาวร')] });
+}
+
 async function viewList() {
   const F = state.filters;
   state.cases = await api.listCases({ brand: state.brand, from: F.from, to: F.to });
   const body = h('div');
+  const LS = state.listSel || (state.listSel = new Set());
   const q = h('input', { type: 'search', placeholder: 'ค้นหาชื่อสื่อ / ผู้แจ้ง / เลขงาน', maxlength: 100, value: F.q, onInput: e => { F.q = e.target.value; draw(); } });
   const from = h('input', { type: 'date', value: F.from, onChange: e => { F.from = e.target.value; render(); } });
   const to = h('input', { type: 'date', value: F.to, onChange: e => { F.to = e.target.value; render(); } });
@@ -755,11 +787,17 @@ async function viewList() {
   } }, 'ส่งออก Excel (ตามที่กรอง)');
   function draw() {
     const list = filtered();
+    for (const id of [...LS]) if (!state.cases.some(c => c.id === id)) LS.delete(id);
+    const allOn = list.length > 0 && list.every(c => LS.has(c.id));
     body.replaceChildren(
-      h('div', { class: 'count' }, `แสดง ${list.length} จาก ${state.cases.length} งาน`),
+      h('div', { class: 'row', style: 'margin:6px 0 8px;align-items:center' }, h('div', { class: 'count', style: 'margin:0' }, `แสดง ${list.length} จาก ${state.cases.length} งาน`), h('span', { class: 'sp' }),
+        state.isAdmin && LS.size ? h('span', { class: 'muted' }, `เลือกอยู่ ${LS.size} สื่อ`) : null,
+        state.isAdmin && LS.size ? h('button', { class: 'btn sm', onClick: () => { LS.clear(); draw(); } }, 'ล้างที่เลือก') : null,
+        state.isAdmin ? h('button', { class: 'btn sm warn', disabled: LS.size === 0, onClick: () => openDeleteCases(state.cases.filter(c => LS.has(c.id)), () => { LS.clear(); render(); }) }, `ลบที่เลือก (${LS.size})`) : null),
       list.length ? h('div', { class: 'tablewrap' }, h('table', null,
-        h('thead', null, h('tr', null, ...['วันที่เสร็จ', 'ชื่อสื่อ', 'เลขงาน', 'ผู้แจ้ง', 'ประเภท', 'วันที่รับแจ้ง', 'สำเร็จ', 'ไม่สำเร็จ', 'ทั้งหมด'].map(t => h('th', null, t)))),
+        h('thead', null, h('tr', null, state.isAdmin ? h('th', null, h('input', { type: 'checkbox', class: 'cb ok', checked: allOn, 'aria-label': 'เลือกทั้งหมดที่แสดง', onChange: e => { list.forEach(c => e.target.checked ? LS.add(c.id) : LS.delete(c.id)); draw(); } })) : null, ...['วันที่เสร็จ', 'ชื่อสื่อ', 'เลขงาน', 'ผู้แจ้ง', 'ประเภท', 'วันที่รับแจ้ง', 'สำเร็จ', 'ไม่สำเร็จ', 'ทั้งหมด'].map(t => h('th', null, t)))),
         h('tbody', null, list.map(c => h('tr', null,
+          state.isAdmin ? h('td', null, h('input', { type: 'checkbox', class: 'cb ok', checked: LS.has(c.id), 'aria-label': 'เลือก ' + c.media_name, onChange: e => { e.target.checked ? LS.add(c.id) : LS.delete(c.id); draw(); } })) : null,
           h('td', null, fmtDate(c.done_date)),
           h('td', null, h('button', { class: 'link', onClick: () => go('detail', c.id) }, c.media_name)),
           h('td', null, c.job_no), h('td', null, c.reporter), h('td', null, h('div', { class: 'chips sm' }, tagBadges(c))), h('td', null, fmtDate(c.received_date)),
@@ -824,7 +862,8 @@ async function viewDetail(id) {
     h('div', { class: 'card' },
       h('div', { class: 'row mb' },
         h('button', { class: 'btn', onClick: () => go('list') }, '← กลับ'), h('span', { class: 'grow' }),
-        h('button', { class: 'btn', onClick: () => openExportDialog(c) }, 'ส่งออก Excel'), h('button', { class: 'btn pri', onClick: () => go('form', c) }, 'แก้ไข')),
+        h('button', { class: 'btn', onClick: () => openExportDialog(c) }, 'ส่งออก Excel'), h('button', { class: 'btn pri', onClick: () => go('form', c) }, 'แก้ไข'),
+        state.isAdmin ? h('button', { class: 'btn warn', onClick: () => openDeleteCases([c], () => go('list')) }, 'ลบสื่อนี้') : null),
       h('div', { class: 'fgrid' }, info('แบรนด์', c.brand), info('ชื่อสื่อ', c.media_name), info('เลขงาน', c.job_no), info('ผู้แจ้ง', c.reporter),
         info('วันที่รับแจ้ง', fmtDate(c.received_date, true)), info('วันที่เสร็จ', fmtDate(c.done_date, true)),
         info('ผลรวม', `สำเร็จ ${cnt.ok} • ไม่สำเร็จ ${cnt.bad} • ไม่ได้ติ๊ก ${cnt.none} (ทั้งหมด ${cnt.total} แถว)`),
@@ -1623,22 +1662,7 @@ async function sectionSpace() {
   try { cases = (await api.listCases({ brand: state.brand, field: 'received_date' })).slice().reverse(); } catch (e) { /* แสดงรายการว่าง */ }
   const D = state.delSel || (state.delSel = new Set()), before = h('input', { type: 'date', class: 'dt', value: state.delBefore || '', 'aria-label': 'ก่อนวันที่', onChange: e => { state.delBefore = e.target.value; } });
   for (const id of [...D]) if (!cases.some(c => c.id === id)) D.delete(id);
-  const confirmDelete = () => {
-    const chosen = cases.filter(c => D.has(c.id)), un = chosen.filter(c => !c.exported_at);
-    let c;
-    const expBtn = h('button', { class: 'btn sm', onClick: async () => {
-      expBtn.disabled = true; toast(`กำลังสร้างไฟล์ ${chosen.length} ชีต…`);
-      try { await exportCasesById(chosen.map(x => x.id), `${safeName(state.brand)}_สำรองก่อนลบ_${todayISO()}.xlsx`); c.close(); render(); }
-      catch (e) { toast('ส่งออกไม่สำเร็จ: ' + errMsg(e), true); expBtn.disabled = false; }
-    } }, 'Export ก่อนลบ');
-    c = openModal({ title: 'ลบสื่อที่เลือก?',
-      body: [h('div', null, `จะลบ ${chosen.length} สื่อ พร้อมรูปและข้อมูลทั้งหมด ลบแล้วกู้คืนไม่ได้`),
-        un.length ? h('div', { class: 'warnbox' }, `มี ${un.length} สื่อที่ยังไม่ได้ Export`, h('div', { style: 'margin-top:6px' }, expBtn)) : h('div', { class: 'muted' }, 'ทุกสื่อที่เลือก Export แล้ว')],
-      footer: [h('button', { class: 'btn', onClick: () => c.close() }, 'ยกเลิก'), h('button', { class: 'btn warn', onClick: async () => {
-        try { await api.deleteCases(chosen.map(x => x.id)); D.clear(); state.cases = []; c.close(); toast(`ลบแล้ว ${chosen.length} สื่อ`); await refreshUsage(); render(); }
-        catch (e) { toast('ลบไม่สำเร็จ: ' + errMsg(e), true); }
-      } }, 'ลบถาวร')] });
-  };
+  const confirmDelete = () => openDeleteCases(cases.filter(c => D.has(c.id)), () => { D.clear(); render(); });
   return h('div', null,
     h('div', { class: 'card' }, h('h2', { class: 'sec' }, 'พื้นที่ใช้งาน (ทั้งโปรเจกต์)'),
       u ? [bar('รูปสื่อ', u.img_bytes / 1048576, LIMITS.img), bar('ฐานข้อมูล', u.db_bytes / 1048576, LIMITS.db),
@@ -1646,7 +1670,8 @@ async function sectionSpace() {
     h('div', { class: 'card' }, h('h2', { class: 'sec' }, `ลบสื่อเก่า • แบรนด์ ${state.brand}`),
       h('p', { class: 'muted' }, 'Export เก็บไว้แล้วค่อยลบ ลบแล้วกู้คืนไม่ได้ ระบบไม่มีแบ็กอัปอัตโนมัติ'),
       cases.length ? [h('div', { class: 'row' }, h('span', { class: 'muted' }, 'เลือกสื่อที่รับแจ้งก่อนวันที่'), before,
-          h('button', { class: 'btn sm', onClick: () => { D.clear(); cases.filter(x => state.delBefore && x.received_date < state.delBefore).forEach(x => D.add(x.id)); render(); } }, 'เลือกให้')),
+          h('button', { class: 'btn sm', onClick: () => { D.clear(); cases.filter(x => state.delBefore && x.received_date < state.delBefore).forEach(x => D.add(x.id)); render(); } }, 'เลือกให้'),
+          h('button', { class: 'btn sm', onClick: () => { cases.forEach(x => D.add(x.id)); render(); } }, 'เลือกทั้งหมด'), h('button', { class: 'btn sm', onClick: () => { D.clear(); render(); } }, 'ล้างที่เลือก')),
         h('div', { style: 'margin-top:10px' }, cases.map(x => h('div', { class: 'mrow' },
           h('input', { type: 'checkbox', class: 'cb ok', checked: D.has(x.id), 'aria-label': 'เลือกลบ ' + x.media_name, onChange: e => { e.target.checked ? D.add(x.id) : D.delete(x.id); render(); } }),
           h('div', { style: 'flex:1;min-width:0' }, h('div', { style: 'font-weight:600' }, x.media_name), h('div', { class: 'hint' }, `รับแจ้ง ${fmtDate(x.received_date)} • ${x.total_rows} แถว`)),
