@@ -1058,12 +1058,51 @@ async function commitForm(f, orig, modal, btn) {
 }
 
 /* ---------- นำเข้าจากไฟล์ชีตเดิม ---------- */
+/* จับแถวในชีตเดิมกับ "รายชื่อหลัก" (ที่ Import จากแม่แบบ) ด้วย Device ID ถ้าไม่มี Device ID ลองจับด้วยชื่อสาขาที่ไม่กำกวม
+   แถวที่จับได้ จะใช้ชื่อสาขา/ประเภทจอ/Shelf/Resolution/ป้ายจากรายชื่อหลักแทนที่พิมพ์ในชีต */
+const normDev = x => clean(x).toLowerCase().replace(/\s+/g, '');
+const normNm = x => lc(clean(x)).replace(/[^a-z0-9฀-๿]/g, '');
+function matchRoster(items) {
+  const byDev = new Map(), byName = new Map(), byOld = new Map();
+  for (const r of state.roster) {
+    const d = normDev(r.device_id);
+    if (d) { if (!byDev.has(d)) byDev.set(d, []); byDev.get(d).push(r); }
+    for (const od of r.old_device_ids || []) { const o = normDev(od); if (o && o !== d) { if (!byOld.has(o)) byOld.set(o, []); byOld.get(o).push(r); } }
+    const n = normNm(r.store_name); if (n) { if (!byName.has(n)) byName.set(n, []); byName.get(n).push(r); }
+  }
+  for (const it of items) {
+    // Device ID ที่ซ้ำกันในชีตเดียวกันแต่เป็นคนละสาขา = กรอกผิด ห้ามเชื่อ ID นั้น
+    const names = new Map();
+    for (const row of it.rows) { const d = normDev(row.device_id); if (!d) continue; if (!names.has(d)) names.set(d, new Set()); names.get(d).add(normNm(row.store_name)); }
+    const badDev = new Set([...names].filter(([, v]) => v.size > 1).map(([k]) => k));
+    const st = { dev: 0, name: 0, none: [], badDev: badDev.size };
+    for (const row of it.rows) {
+      const dk = normDev(row.device_id), nm = normNm(row.store_name);
+      let m = null, how = 'dev';
+      const dc = dk && !badDev.has(dk) ? byDev.get(dk) || [] : [];
+      if (dc.length === 1) m = dc[0];
+      else if (dc.length > 1) { const x = dc.filter(r => normNm(r.store_name) === nm); if (x.length === 1) m = x[0]; }
+      if (!m && dk && !badDev.has(dk)) { const oc = (byOld.get(dk) || []).filter((r, i, arr) => arr.indexOf(r) === i); if (oc.length === 1 && !dc.length) m = oc[0]; }
+      if (!m) {
+        how = 'name';
+        const cand = byName.get(nm) || [];
+        const same = cand.filter(x => lc(x.screen_type) === lc(row.screen_type));
+        m = cand.length === 1 ? cand[0] : same.length === 1 ? same[0] : null;
+      }
+      if (!m) { st.none.push(row); continue; }
+      how === 'dev' ? st.dev++ : st.name++;
+      Object.assign(row, { store_name: m.store_name, province: m.province || row.province, screen_type: m.screen_type, shelf: m.shelf || '', res: m.res || '',
+        tags: [...(m.tags || [])], device_id: m.device_id || row.device_id });
+    }
+    it.rows = arrange(it.rows);
+    it.match = st;
+  }
+}
+
 async function viewImport() {
   if (!state.cases.length) { try { state.cases = await api.listCases({ brand: state.brand }); } catch (e) { /* ข้าม */ } }
   const box = h('div');
   let items = [];
-  const rosterEmpty = !state.roster.length;
-  const makeRoster = h('input', { type: 'checkbox', checked: state.isAdmin && rosterEmpty });
   const bulkRep = h('input', { maxlength: 100, placeholder: 'ผู้แจ้ง (ใช้กับทุกแท็บ)' });
 
   const file = h('input', { type: 'file', accept: '.xlsx', onChange: async e => {
@@ -1071,6 +1110,7 @@ async function viewImport() {
     box.replaceChildren(h('p', { class: 'muted' }, 'กำลังอ่านไฟล์…'));
     try {
       items = await parseWorkbook(fl);
+      if (items.length) matchRoster(items);
       if (!items.length) return box.replaceChildren(h('div', { class: 'note warn' }, 'ไม่พบตารางจอในไฟล์นี้ (ต้องมีหัวตาราง 2 แถว และข้อมูลเริ่มแถวที่ 3 เหมือนชีตเดิม)'));
       for (const it of items) it.src = it.blob ? await blobToDataURL(it.blob).catch(() => null) : null;
       drawItems();
@@ -1090,6 +1130,10 @@ async function viewImport() {
           field('ชื่อสื่อ *', inp('media_name')), field('เลขงาน', inp('job_no')),
           field('ผู้แจ้ง *', inp('reporter')), field('วันที่รับแจ้ง *', inp('received_date', 'date')), field('วันที่เสร็จ *', inp('done_date', 'date'))),
         it.src ? h('img', { class: 'imgprev', src: it.src, alt: 'รูปสื่อ' }) : null,
+        it.match ? h('div', { class: 'note' + (it.match.none.length || it.match.badDev ? ' warn' : ''), style: 'margin-top:8px' },
+          `จับกับรายชื่อหลักได้ ${it.match.dev + it.match.name} แถว (Device ID ${it.match.dev}` + (it.match.name ? ` • ชื่อสาขา ${it.match.name}` : '') + `)` +
+          (it.match.badDev ? ` • Device ID ซ้ำกันคนละสาขาในชีตนี้ ${it.match.badDev} ค่า (ไม่ใช้ ID นั้นจับ ใช้ชื่อสาขาแทน)` : '') +
+          (it.match.none.length ? ` • ไม่พบในรายชื่อหลัก ${it.match.none.length} แถว: ` + it.match.none.slice(0, 6).map(r => `${r.device_id || '(ไม่มี Device ID)'} ${r.store_name || ''}`.trim()).join(', ') + (it.match.none.length > 6 ? ' …' : '') : '')) : null,
         dup ? h('div', { class: 'note warn', style: 'margin-top:8px' }, `มีงานเลขงาน ${it.job_no} วันที่รับแจ้งเดียวกันอยู่ในระบบแล้ว (${dup.media_name}) ระวังนำเข้าซ้ำ`) : null,
         ...it.warnings.map(w => h('div', { class: 'note', style: 'margin-top:8px' }, '⚠ ' + w)));
     });
@@ -1099,9 +1143,7 @@ async function viewImport() {
         h('div', { class: 'f grow' }, `กรอกครั้งเดียวใช้กับทุกแท็บ (แบรนด์ ${state.brand})`, bulkRep),
         h('button', { class: 'btn', onClick: () => { for (const it of items) if (bulkRep.value.trim()) it.reporter = bulkRep.value.trim(); drawItems(); } }, 'ใช้กับทุกแท็บ'))),
       ...cards,
-      h('div', { class: 'card' },
-        state.isAdmin && rosterEmpty ? h('label', { class: 'row mb' }, makeRoster, 'ใช้แถวจอจากแท็บแรกเป็นรายชื่อจอหลักของแบรนด์นี้ด้วย (รายชื่อหลักยังว่างอยู่)') : null,
-        go1));
+      h('div', { class: 'card' }, go1));
   }
 
   async function doImport(btn) {
@@ -1111,8 +1153,9 @@ async function viewImport() {
       const e = validateForm({ ...it, types: new Set(['x']) });
       if (e) return toast(`แท็บ "${it.name}": ${e}`, true);
     }
-    const total = sel.reduce((a, i) => a + i.rows.length, 0);
-    if (!await confirmDialog({ title: 'ยืนยันนำเข้า?', lines: [`นำเข้า ${sel.length} งาน รวม ${total} แถว เข้าแบรนด์ ${state.brand}`, makeRoster.checked ? 'และสร้างรายชื่อจอหลักจากแท็บแรก' : '', 'ข้อมูลจะถูกบันทึกเข้าระบบจริง'].filter(Boolean), okText: 'นำเข้า' })) return;
+    if (!state.roster.length) return toast('ยังไม่มีรายชื่อจอหลัก ไปที่ ตั้งค่า > กรุ๊ปจอ แล้ว Import แม่แบบก่อน', true);
+    const total = sel.reduce((a, i) => a + i.rows.length, 0), lost = sel.reduce((a, i) => a + (i.match ? i.match.none.length : 0), 0);
+    if (!await confirmDialog({ title: 'ยืนยันนำเข้า?', lines: [`นำเข้า ${sel.length} งาน รวม ${total} แถว เข้าแบรนด์ ${state.brand}`, lost ? `มี ${lost} แถวที่ไม่พบในรายชื่อหลัก จะนำเข้าตามที่เขียนในชีต (ค้นหาสาขาอาจไม่เจอแถวเหล่านี้)` : '', 'ข้อมูลจะถูกบันทึกเข้าระบบจริง'].filter(Boolean), okText: 'นำเข้า' })) return;
     btn.disabled = true;
     try {
       let n = 0;
@@ -1121,14 +1164,7 @@ async function viewImport() {
         const image_path = it.blob ? await api.uploadImage(await shrinkImage(it.blob)) : null;
         await api.saveCase({ id: null, brand: state.brand, media_name: clean(it.media_name), job_no: clean(it.job_no),
           received_date: it.received_date, done_date: it.done_date, reporter: clean(it.reporter), image_path,
-          types: uniqList(it.rows.map(r => r.screen_type)), shelves: uniqList(it.rows.map(r => r.shelf).filter(Boolean)), tags: [], rows: it.rows });
-      }
-      if (makeRoster.checked && state.isAdmin && !state.roster.length) {
-        const rows = sel[0].rows;
-        for (const t of uniqList(rows.map(r => r.screen_type))) if (!typeCfg(t)) await api.typeInsert({ brand: state.brand, name: t, default_res: '', shelves: [] });
-        await api.rosterInsert(rows.map(r => ({ brand: state.brand, store_no: r.store_no, store_name: r.store_name, province: r.province, screen_count: r.screen_count,
-          screen_type: r.screen_type, shelf: r.shelf || '', res: r.res || '', tags: [], device_id: r.device_id, screen_status: r.screen_status })));
-        await refreshConfig(); await refreshRoster();
+          types: uniqList(it.rows.map(r => r.screen_type)), shelves: uniqList(it.rows.map(r => r.shelf).filter(Boolean)), tags: uniqList(it.rows.flatMap(r => r.tags || [])), rows: it.rows });
       }
       toast(`นำเข้าสำเร็จ ${sel.length} งาน`); state.cases = []; go('list');
     } catch (e) { toast('นำเข้าไม่สำเร็จ: ' + errMsg(e), true); btn.disabled = false; }
@@ -1137,7 +1173,7 @@ async function viewImport() {
   return h('div', null,
     h('div', { class: 'card' },
       h('h2', { class: 'sec' }, `นำเข้าจากไฟล์ชีตเดิม (แบรนด์ ${state.brand})`),
-      h('p', { class: 'muted' }, 'ใน Google Sheet กด ไฟล์ > ดาวน์โหลด > Microsoft Excel (.xlsx) แล้วเลือกไฟล์ที่นี่ 1 แท็บ = 1 งาน (ถ้าแท็บเดียวมีหลายสื่อวางต่อกัน ระบบแยกให้เป็นหลายงาน) ระบบแสดงตัวอย่างให้ตรวจก่อนบันทึกจริง (ไฟล์ที่ Export จากเว็บนี้ก็นำกลับเข้ามาได้)'),
+      h('p', { class: 'muted' }, 'ใน Google Sheet กด ไฟล์ > ดาวน์โหลด > Microsoft Excel (.xlsx) แล้วเลือกไฟล์ที่นี่ 1 แท็บ = 1 งาน (ถ้าแท็บเดียวมีหลายสื่อวางต่อกัน ระบบแยกให้เป็นหลายงาน) ระบบจับแต่ละแถวกับ "รายชื่อหลัก" ด้วย Device ID (ต้อง Import แม่แบบรายชื่อจอก่อน) แล้วแสดงตัวอย่างให้ตรวจก่อนบันทึกจริง (ไฟล์ที่ Export จากเว็บนี้ก็นำกลับเข้ามาได้)'),
       file),
     box);
 }
@@ -1159,7 +1195,7 @@ async function viewSearch() {
   const schedule = () => { clearTimeout(timer); timer = setTimeout(load, 250); };
 
   const filt = h('div', { class: 'card' },
-    h('div', { class: 'f' }, 'พิมพ์ชื่อสาขา', h('input', { type: 'search', maxlength: 100, value: bs.q, placeholder: 'เช่น One Bangkok', onInput: e => { bs.q = e.target.value; bs.store = null; schedule(); } })),
+    h('div', { class: 'f' }, 'พิมพ์ชื่อสาขา หรือ Device ID', h('input', { type: 'search', maxlength: 100, value: bs.q, placeholder: 'เช่น One Bangkok', onInput: e => { bs.q = e.target.value; bs.store = null; schedule(); } })),
     cfgTypes.length ? h('div', null, h('div', { class: 'lbl' }, 'ประเภทจอ'), chipSet(cfgTypes.map(t => t.name), bs.types, again)) : null,
     shelfPool.length ? h('div', null, h('div', { class: 'lbl' }, 'Shelf'), chipSet(shelfPool, bs.shelves, again)) : null,
     hasTags() ? h('div', null, h('div', { class: 'lbl' }, 'ประเภทสาขา'), chipSet(tagList(), bs.tags, again)) : null,
@@ -1302,7 +1338,9 @@ function openImportGroup(t) {
   const ta = h('textarea', { placeholder: 'หรือวางชื่อสาขาที่นี่ 1 บรรทัดต่อ 1 จอ' + (hasShelfBase ? ' เช่น\nOne Bangkok จอซ้าย' : ''), maxlength: 60000 });
   const out = h('div'), sum = h('span', { class: 'sp' });
   const hasShelf = () => hasShelfBase || fileHasShelf;
-  const findExisting = it => state.roster.find(r => r.screen_type === t.name && (it.device_id ? r.device_id === it.device_id : (lc(r.store_name) === lc(it.store_name) && (r.shelf || '') === (it.shelf || ''))));
+  let dupIds = new Set();   // Device ID ที่ซ้ำกันในไฟล์ (คนละจอใช้ ID เดียวกัน) -> ห้ามใช้ ID นี้จับว่าเป็นจอเดิม
+  const dn = x => clean(x).toLowerCase().replace(/\s+/g, '');
+  const findExisting = it => state.roster.find(r => r.screen_type === t.name && (it.device_id && !dupIds.has(dn(it.device_id)) ? dn(r.device_id) === dn(it.device_id) : (lc(r.store_name) === lc(it.store_name) && (r.shelf || '') === (it.shelf || ''))));
   const build = rows => {
     warn = [];
     items = rows.map(r => {
@@ -1319,6 +1357,10 @@ function openImportGroup(t) {
       return { raw: r.store_name, store_name: store, province: r.province || '', device_id: r.device_id || '', status: r.screen_status || '', res: r.res || '', count: r.screen_count || 1,
         tagText: r.tagText || '', tags, shelf: choice === 'new' ? '' : shelf ? (t.shelves.find(x => lc(x) === lc(shelf)) || shelf) : '', choice, guess };
     });
+    { const seen = new Map(); dupIds = new Set();
+      items.forEach(it => { const d = dn(it.device_id); if (d) seen.set(d, (seen.get(d) || 0) + 1); });
+      seen.forEach((n, d) => { if (n > 1) dupIds.add(d); });
+      if (dupIds.size) warn.push(`Device ID ซ้ำกันในไฟล์ ${dupIds.size} ค่า (${[...dupIds].slice(0, 5).join(', ')}${dupIds.size > 5 ? ' …' : ''}) กรุณาแก้ในไฟล์ให้ไม่ซ้ำ ระบบจะไม่ใช้ ID เหล่านี้จับจอเดิม จะใช้ชื่อสาขา+Shelf แทน`); }
     drawOut();
   };
   const resolved = it => !hasShelf() || (it.choice && it.choice !== '');
@@ -1399,7 +1441,7 @@ function sectionRoster() {
   const filtered = () => {
     const t = lc(R.q);
     return state.roster.filter(r => (!R.type || r.screen_type === R.type) && (!R.tag || (r.tags || []).includes(R.tag)) &&
-      (!t || [r.store_name, r.province, r.device_id, r.shelf].some(x => lc(x).includes(t))));
+      (!t || [r.store_name, r.province, r.device_id, r.shelf, ...(r.old_device_ids || [])].some(x => lc(x).includes(t))));
   };
   const tagSel = h('select', { 'aria-label': 'เลือกป้าย' }, tagList().map(x => h('option', { value: x }, x)));
   const applyTag = async mode => {
@@ -1449,7 +1491,7 @@ async function delScreen(r, redraw) {
   try { await api.rosterDelete(r.id); await refreshRoster(); redraw(); toast('ลบแล้ว'); } catch (e) { toast('ลบไม่สำเร็จ: ' + errMsg(e), true); }
 }
 function openEditScreen(row, redraw) {
-  const r = { ...row, tags: new Set(row.tags || []) };
+  const r = { ...row, tags: new Set(row.tags || []), old_device_ids: [...(row.old_device_ids || [])] };
   const types = brandTypes();
   const mk = (k, label, type, props) => field(label, h('input', { type: type || 'text', maxlength: 150, value: r[k] ?? '', onInput: e => { r[k] = e.target.value; }, ...(props || {}) }));
   const typeSel = h('select', { onChange: e => { r.screen_type = e.target.value; } }, types.map(t => h('option', { value: t.name, selected: t.name === r.screen_type }, t.name)));
@@ -1458,15 +1500,23 @@ function openEditScreen(row, redraw) {
     const out = { store_name: clean(r.store_name), province: fixThai(r.province), screen_count: Math.min(99, Math.max(0, parseInt(r.screen_count, 10) || 1)), screen_type: r.screen_type,
       shelf: clean(r.shelf), res: clean(r.res), tags: [...r.tags], device_id: clean(r.device_id), screen_status: clean(r.screen_status) };
     if (!out.store_name) return toast('กรุณากรอกชื่อสาขา', true);
+    // เปลี่ยน Device ID (เปลี่ยนกล่อง) -> เก็บ ID เดิมไว้เป็น "Device ID เก่า" ให้ชีตเก่ายังจับจอนี้ได้
+    const dn = x => clean(x).toLowerCase().replace(/\s+/g, '');
+    let olds = r.old_device_ids.filter(x => dn(x) !== dn(out.device_id));
+    if (clean(row.device_id) && dn(row.device_id) !== dn(out.device_id) && !olds.some(x => dn(x) === dn(row.device_id))) olds.push(clean(row.device_id));
+    out.old_device_ids = olds;
     save.disabled = true;
     try { await api.rosterUpdate(row.id, out); m.close(); toast('บันทึกแล้ว'); await refreshRoster(); redraw(); } catch (e) { toast('บันทึกไม่สำเร็จ: ' + errMsg(e), true); save.disabled = false; }
   } }, 'บันทึก');
-  const tagBox = h('div');
+  const tagBox = h('div'), oldBox = h('div');
   const drawTags = () => tagBox.replaceChildren(hasTags() ? h('div', null, h('div', { class: 'lbl first' }, 'ประเภทสาขา'), chipSet(tagList(), r.tags, drawTags)) : null);
-  drawTags();
+  const drawOld = () => oldBox.replaceChildren(h('div', { class: 'lbl' }, 'Device ID เก่า (ใช้จับชีตเก่าที่ยังใช้ ID เดิม)'),
+    r.old_device_ids.length ? h('div', { class: 'chips sm' }, r.old_device_ids.map((x, i) => h('span', { class: 'badge tag2 big' }, x, h('button', { class: 'x sm', 'aria-label': 'ลบ Device ID เก่า ' + x, onClick: () => { r.old_device_ids.splice(i, 1); drawOld(); } }, '×'))))
+      : h('div', { class: 'hint' }, 'ยังไม่มี  เมื่อแก้ช่อง Device ID ด้านบน ระบบจะเก็บค่าเดิมมาไว้ตรงนี้ให้เอง'));
+  drawTags(); drawOld();
   m = openModal({ title: 'แก้ไขจอ', body: [h('div', { class: 'fgrid' }, mk('store_name', 'Store Name'), mk('province', 'จังหวัด'), field('ประเภทจอ', typeSel),
       mk('shelf', 'Shelf', 'text', { list: 'dl-shelf' }), mk('res', 'Resolution'), mk('device_id', 'Device ID'), mk('screen_status', 'สถานะจอ'), mk('screen_count', 'จำนวนจอ', 'number')),
-      h('datalist', { id: 'dl-shelf' }, uniqList(types.flatMap(t => t.shelves)).map(s => h('option', { value: s }))), tagBox],
+      h('datalist', { id: 'dl-shelf' }, uniqList(types.flatMap(t => t.shelves)).map(s => h('option', { value: s }))), tagBox, oldBox],
     footer: [h('button', { class: 'btn', onClick: () => m.close() }, 'ยกเลิก'), save] });
 }
 
