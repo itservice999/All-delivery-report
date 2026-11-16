@@ -269,6 +269,7 @@ const api = {
     }
   },
   async rosterUpdate(id, row) { const { error } = await sb.from('dr_roster').update(row).eq('id', id); if (error) throw error; },
+  async rosterClear(brand, type) { const { error } = await sb.from('dr_roster').delete().eq('brand', brand).eq('screen_type', type); if (error) throw error; },
   async rosterDelete(id) { const { error } = await sb.from('dr_roster').delete().eq('id', id); if (error) throw error; },
   async rosterTag(ids, add, remove) {
     for (let i = 0; i < ids.length; i += 500) {
@@ -1297,6 +1298,10 @@ function sectionGroups() {
     return h('div', { class: 'card' },
       h('div', { class: 'row mb' }, h('h2', { class: 'sec', style: 'margin:0' }, t.name), h('span', { class: 'badge tag' }, `${rows.length} จอ • ${new Set(rows.map(storeKey)).size} สาขา`), h('span', { class: 'sp' }),
         state.isAdmin ? h('button', { class: 'btn sm pri', onClick: () => openImportGroup(t) }, 'Import ไฟล์') : null,
+        state.isAdmin && rows.length ? h('button', { class: 'btn sm warn', onClick: async () => {
+          if (!await confirmDialog({ title: `ล้างรายชื่อจอทั้งกรุ๊ป "${t.name}"?`, lines: [`จะลบจอทั้งหมด ${rows.length} จอ ออกจากรายชื่อหลักของกรุ๊ปนี้ แล้วค่อย Import แม่แบบใหม่`, 'รีพอร์ตที่บันทึกไปแล้วไม่ได้รับผลกระทบ', 'ลบแล้วกู้คืนไม่ได้'], okText: 'ล้างทั้งกรุ๊ป', danger: true })) return;
+          try { await api.rosterClear(state.brand, t.name); await refreshRoster(); toast(`ล้างรายชื่อจอกรุ๊ป ${t.name} แล้ว`); render(); } catch (e) { toast('ล้างไม่สำเร็จ: ' + errMsg(e), true); }
+        } }, 'ล้างรายชื่อจอทั้งกรุ๊ป') : null,
         state.isAdmin && !rows.length ? h('button', { class: 'btn sm', onClick: async () => {
           if (!await confirmDialog({ title: `ลบกรุ๊ป "${t.name}"?`, lines: ['กรุ๊ปนี้ยังไม่มีจอ ลบได้'], okText: 'ลบ', danger: true })) return;
           try { await api.typeDelete(state.brand, t.name); await refreshConfig(); render(); } catch (e) { toast('ลบไม่สำเร็จ: ' + errMsg(e), true); }
