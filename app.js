@@ -18,6 +18,7 @@ const state = {
 // replaceChildren แสดง null/false เป็นข้อความ "null"/"false" -> กรองออกก่อนเสมอ
 { const _rc = Element.prototype.replaceChildren;
   Element.prototype.replaceChildren = function (...a) { return _rc.apply(this, a.flat(Infinity).filter(x => x != null && x !== false)); }; }
+const APP_VERSION = '2026-11-17.1';   // เปลี่ยนทุกครั้งที่ปล่อยไฟล์ใหม่ ใช้เช็กว่าเว็บรันไฟล์ตัวไหนอยู่
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props || {})) {
@@ -633,7 +634,7 @@ function shell(content) {
         state.brands.map(b => h('option', { value: b.name, selected: b.name === state.brand }, b.name))),
       h('nav', { class: 'nav' }, NAV.map(([v, t]) => h('button', { class: 'btn' + (state.view === v || (v === 'list' && state.view === 'detail') ? ' on' : ''), onClick: () => go(v) }, t, v === 'settings' ? dot : null))),
       h('span', { class: 'sp' }),
-      h('span', { class: 'who' }, state.user.email + (state.isAdmin ? ' (admin)' : '')),
+      h('span', { class: 'who' }, state.user.email + (state.isAdmin ? ' (admin)' : '') + ' • เวอร์ชัน ' + APP_VERSION),
       h('button', { class: 'btn', onClick: logout }, 'ออกจากระบบ')),
     h('main', null, content));
 }
@@ -878,10 +879,18 @@ function validateForm(f) {
   if (!clean(f.reporter)) return 'กรุณากรอกชื่อผู้แจ้ง';
   if (!f.received_date || !f.done_date) return 'กรุณาเลือกวันที่รับแจ้งและวันที่เสร็จ';
   if (f.done_date < f.received_date) return 'วันที่เสร็จต้องไม่ก่อนวันที่รับแจ้ง';
-  if (!f.types.size) return 'กรุณาเลือกประเภทจออย่างน้อย 1 ประเภท';
+  if (f.mode === 'pick') { if (!(f.pickIds && f.pickIds.size)) return 'กรุณาเลือกจออย่างน้อย 1 จอ'; }
+  else if (!f.types.size) return 'กรุณาเลือกประเภทจออย่างน้อย 1 ประเภท';
   return '';
 }
-const selSig = f => JSON.stringify([[...f.types].sort(), [...f.shelves].sort(), [...f.tags].sort()]);
+const selSig = f => f.mode === 'pick' ? JSON.stringify(['pick', [...f.pickIds].sort()]) : JSON.stringify([[...f.types].sort(), [...f.shelves].sort(), [...f.tags].sort()]);
+// โหมดเลือกเฉพาะจอ: สรุปประเภทจอ/Shelf/ป้ายจากจอที่เลือก (ใช้กับ validate และบันทึก)
+const pickedScreens = f => state.roster.filter(s => f.pickIds.has(s.id));
+function syncPickMeta(f) {
+  const ps = pickedScreens(f);
+  f.types = new Set(ps.map(s => s.screen_type)); f.shelves = new Set(ps.filter(s => s.shelf && shelvesOf(s.screen_type).length).map(s => s.shelf));
+  f.tags = new Set(ps.flatMap(s => s.tags || [])); f.tagsTouched = true;
+}
 function diffRows(a, b) {
   const A = new Map(), B = new Map();
   const put = (m, rows) => { const seen = {}; rows.forEach(r => { const k = rowKey(r); seen[k] = (seen[k] || 0) + 1; m.set(k + '#' + seen[k], r); }); };
@@ -946,11 +955,11 @@ async function viewForm(existing) {
     f = { id: existing.id, media_name: existing.media_name, job_no: existing.job_no || '', reporter: existing.reporter,
       received_date: existing.received_date, done_date: existing.done_date,
       types: new Set(existing.types && existing.types.length ? existing.types : typesFromRows), shelves: new Set(existing.shelves || []), tags: new Set(existing.tags || []),
-      tagsTouched: true, rows: deep(existing.rows), rowSig: null, notice: '', image: { blob: null, src: existing.imgSrc || null } };
+      tagsTouched: true, mode: 'auto', pickIds: new Set(), rows: deep(existing.rows), rowSig: null, notice: '', image: { blob: null, src: existing.imgSrc || null } };
     f.rowSig = selSig(f);
   } else {
-    if (!state.form) state.form = { id: null, media_name: '', job_no: '', reporter: '', received_date: todayISO(), done_date: todayISO(), types: new Set(), shelves: new Set(), tags: new Set(), tagsTouched: false, rows: null, rowSig: null, notice: '', image: { blob: null, src: null } };
-    f = state.form;
+    if (!state.form) state.form = { id: null, media_name: '', job_no: '', reporter: '', received_date: todayISO(), done_date: todayISO(), types: new Set(), shelves: new Set(), tags: new Set(), tagsTouched: false, mode: 'auto', pickIds: new Set(), rows: null, rowSig: null, notice: '', image: { blob: null, src: null } };
+    f = state.form; if (!f.mode) { f.mode = 'auto'; f.pickIds = new Set(); }
   }
   const orig = isEdit ? { f: { ...deep({ ...f, types: [], shelves: [], tags: [], rows: [], image: null }) }, rows: deep(existing.rows), sig: f.rowSig } : null;
   if (!state.cases.length) { try { state.cases = await api.listCases({ brand: state.brand }); } catch (e) { /* ไม่มีรายชื่อแนะนำก็ไม่เป็นไร */ } }
@@ -959,7 +968,7 @@ async function viewForm(existing) {
   function draw() {
     const typesCfg = brandTypes();
     const shelfPool = uniqList((f.types.size ? [...f.types] : typesCfg.map(t => t.name)).flatMap(t => shelvesOf(t)));
-    const picked = f.types.size ? pickScreens(f.types, f.shelves, f.tags) : [];
+    const picked = f.mode === 'pick' ? pickedScreens(f) : (f.types.size ? pickScreens(f.types, f.shelves, f.tags) : []);
     const again = () => draw();
     // ---- ช่องรูป: ต้องคลิกก่อนจึงวางด้วย Ctrl+V ได้ (กันวางผิดที่) ----
     const zone = h('div', { class: 'drop', tabindex: '0', role: 'button', 'aria-label': 'ช่องวางรูปสื่อ' });
@@ -988,6 +997,36 @@ async function viewForm(existing) {
     const uniqCase = k => uniqList(state.cases.map(c => clean(c[k])).filter(Boolean));
 
     const stores = new Set(picked.map(s => storeKey(s))).size;
+    // ---- โหมดเลือกเฉพาะสาขา/จอ: ค้นด้วยชื่อสาขา / Device ID แล้วติ๊กเอง ----
+    function pickPanel() {
+      const wrap = h('div'), resBox = h('div'), selBox = h('div'), cntLine = h('div', { class: 'count' });
+      const qIn = h('input', { type: 'search', maxlength: 100, placeholder: 'พิมพ์ชื่อสาขา / Device ID / จังหวัด', value: f.pickQ || '', 'aria-label': 'ค้นหาจอ' });
+      const label = s => `${s.store_name} • ${s.screen_type}${s.shelf ? ' ' + s.shelf : ''}`;
+      const sub = s => [s.province, s.device_id, s.res && 'Resolution ' + s.res].filter(Boolean).join(' • ');
+      const hits = () => {
+        const q = lc(f.pickQ || ''); if (!q) return [];
+        return state.roster.filter(s => [s.store_name, s.province, s.device_id, s.shelf, s.screen_type, ...(s.old_device_ids || [])].some(x => lc(x).includes(q)));
+      };
+      const refresh = () => {
+        syncPickMeta(f);
+        const hs = hits(), shown = hs.slice(0, 40), ps = pickedScreens(f);
+        resBox.replaceChildren(!clean(f.pickQ) ? h('div', { class: 'hint' }, 'พิมพ์ค้นหา แล้วติ๊กเลือกจอที่สื่อนี้ขึ้น (เลือกได้หลายสาขา หลายจอ)') : null,
+          clean(f.pickQ) && !hs.length ? h('div', { class: 'muted' }, 'ไม่พบสาขาหรือจอที่ตรงกัน') : null,
+          hs.length ? h('div', { class: 'row', style: 'margin:6px 0' }, h('span', { class: 'muted' }, `พบ ${hs.length} จอ` + (hs.length > shown.length ? ` (แสดง ${shown.length} จอแรก)` : '')), h('span', { class: 'sp' }),
+            h('button', { class: 'btn sm', onClick: () => { hs.forEach(x => f.pickIds.add(x.id)); refresh(); } }, 'เลือกทั้งหมดที่ค้นเจอ')) : null,
+          shown.map(s => h('label', { class: 'mrow', style: 'cursor:pointer;align-items:center' },
+            h('input', { type: 'checkbox', class: 'cb ok', checked: f.pickIds.has(s.id), 'aria-label': 'เลือก ' + label(s), onChange: e => { e.target.checked ? f.pickIds.add(s.id) : f.pickIds.delete(s.id); refresh(); } }),
+            h('div', { style: 'flex:1;min-width:0' }, h('div', { style: 'font-weight:600' }, label(s)), h('div', { class: 'hint' }, sub(s))))));
+        selBox.replaceChildren(ps.length ? h('div', null, h('div', { class: 'lbl' }, 'จอที่เลือกไว้'),
+          h('div', { class: 'chips sm' }, ps.map(s => h('span', { class: 'badge tag big' }, label(s), h('button', { class: 'x sm', 'aria-label': 'เอาออก ' + label(s), onClick: () => { f.pickIds.delete(s.id); refresh(); } }, '×')))),
+          h('div', { style: 'margin-top:6px' }, h('button', { class: 'btn sm', onClick: () => { f.pickIds.clear(); refresh(); } }, 'ล้างที่เลือก'))) : null);
+        cntLine.textContent = ps.length ? `เลือกแล้ว ${ps.length} จอ จาก ${new Set(ps.map(storeKey)).size} สาขา` : 'ยังไม่ได้เลือกจอ';
+      };
+      qIn.addEventListener('input', e => { f.pickQ = e.target.value; refresh(); });
+      wrap.append(h('div', { class: 'f' }, 'ค้นหาจอ', qIn), resBox, selBox, cntLine);
+      refresh();
+      return wrap;
+    }
     box.replaceChildren(
       isEdit ? null : h('div', { class: 'card' }, h('h2', { class: 'sec' }, 'วางข้อความแจ้ง (ไม่ต้องพิมพ์ทีละช่อง)'), h('div', { class: 'f' }, ta),
         h('div', { class: 'row', style: 'margin-top:8px' },
@@ -1001,8 +1040,12 @@ async function viewForm(existing) {
           field('วันที่รับแจ้ง *', h('input', { type: 'date', value: f.received_date, onChange: e => { f.received_date = e.target.value; } })),
           field('วันที่เสร็จ *', h('input', { type: 'date', value: f.done_date, onChange: e => { f.done_date = e.target.value; } }))),
         h('datalist', { id: 'dl-rep' }, uniqList([...state.reporters.map(r => r.name), ...uniqCase('reporter')]).map(v => h('option', { value: v })))),
-      h('div', { class: 'card' }, h('h2', { class: 'sec' }, 'เลือกจอที่สื่อนี้ขึ้น (ระบบติ๊กให้เอง)'),
-        typesCfg.length ? [
+      h('div', { class: 'card' }, h('h2', { class: 'sec' }, 'เลือกจอที่สื่อนี้ขึ้น'),
+        isEdit ? null : h('div', { class: 'chips', style: 'margin-bottom:10px' },
+          h('button', { class: 'chip' + (f.mode !== 'pick' ? ' on' : ''), onClick: () => { f.mode = 'auto'; draw(); } }, 'ติ๊กอัตโนมัติตามประเภทจอ'),
+          h('button', { class: 'chip' + (f.mode === 'pick' ? ' on' : ''), onClick: () => { f.mode = 'pick'; syncPickMeta(f); draw(); } }, 'เลือกเฉพาะสาขา / จอ')),
+        f.mode === 'pick' && !isEdit ? pickPanel() : null,
+        f.mode === 'pick' && !isEdit ? null : typesCfg.length ? [
           h('div', { class: 'lbl first' }, 'ประเภทจอ *'),
           chipSet(typesCfg.map(t => t.name), f.types, again, t => `${t} (${state.roster.filter(r => r.screen_type === t).length})`),
           shelfPool.length ? h('div', null, h('div', { class: 'lbl' }, 'Shelf (ชั้นวางสินค้า)'), chipSet(shelfPool, f.shelves, again),
@@ -1021,10 +1064,11 @@ async function viewForm(existing) {
         h('button', { class: 'btn pri', onClick: () => next() }, 'ตรวจสอบจอที่ติ๊กให้ →')));
   }
   function next() {
+    if (f.mode === 'pick') syncPickMeta(f);
     const e = validateForm(f); if (e) return toast(e, true);
     const sig = selSig(f);
     if (!f.rows || f.rowSig !== sig) {
-      const picked = pickScreens(f.types, f.shelves, f.tags);
+      const picked = f.mode === 'pick' ? pickedScreens(f) : pickScreens(f.types, f.shelves, f.tags);
       const old = new Map((f.rows || []).map(r => [rowKey(r), r]));
       f.rows = arrange(picked.map(s => { const r = toCaseRow(s); return old.get(rowKey(r)) || r; }));
       f.rowSig = sig;
@@ -1092,7 +1136,7 @@ async function commitForm(f, orig, modal, btn) {
     const image_path = f.image.blob ? await api.uploadImage(f.image.blob) : null;
     const id = await api.saveCase({ id: f.id, brand: state.brand, media_name: clean(f.media_name), job_no: clean(f.job_no),
       received_date: f.received_date, done_date: f.done_date, reporter: clean(f.reporter), image_path,
-      types: [...f.types], shelves: [...f.shelves], tags: [...f.tags], rows: f.rows });
+      ...(f.mode === 'pick' ? { types: uniqList(f.rows.map(r => r.screen_type)), shelves: uniqList(f.rows.map(r => r.shelf).filter(Boolean)), tags: uniqList(f.rows.flatMap(r => r.tags || [])) } : { types: [...f.types], shelves: [...f.shelves], tags: [...f.tags] }), rows: f.rows });
     modal.close(); toast('บันทึกแล้ว');
     if (!orig) state.form = null;
     state.cases = [];
