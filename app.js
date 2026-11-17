@@ -18,7 +18,7 @@ const state = {
 // replaceChildren แสดง null/false เป็นข้อความ "null"/"false" -> กรองออกก่อนเสมอ
 { const _rc = Element.prototype.replaceChildren;
   Element.prototype.replaceChildren = function (...a) { return _rc.apply(this, a.flat(Infinity).filter(x => x != null && x !== false)); }; }
-const APP_VERSION = '2026-11-17.1';   // เปลี่ยนทุกครั้งที่ปล่อยไฟล์ใหม่ ใช้เช็กว่าเว็บรันไฟล์ตัวไหนอยู่
+const APP_VERSION = '2026-11-17.3';   // เปลี่ยนทุกครั้งที่ปล่อยไฟล์ใหม่ ใช้เช็กว่าเว็บรันไฟล์ตัวไหนอยู่
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props || {})) {
@@ -689,6 +689,20 @@ function renderLogin(msg) {
 async function logout() { await sb.auth.signOut(); }
 
 /* ---------- ตารางแบบชีต ---------- */
+// สถานะจอเก็บรายสื่อ: ในฟอร์มแก้ได้ต่อแถว (Online / Offline / ว่าง) ไม่กระทบรายชื่อจอหลัก
+function statusCell(r, editable, onChange) {
+  const cls = v => 'stat ' + (/^off/i.test(clean(v)) ? 'offline' : 'online');
+  const td = h('td', { class: cls(r.screen_status) });
+  if (!editable) { td.textContent = r.screen_status || ''; return td; }
+  const cur = clean(r.screen_status);
+  const opts = ['', 'Online', 'Offline'];
+  if (cur && !opts.includes(cur)) opts.push(cur);
+  const sel = h('select', { class: 'stsel', 'aria-label': 'สถานะจอ' },
+    ...opts.map(o => h('option', { value: o, selected: o === cur }, o || '-')));
+  sel.addEventListener('change', () => { r.screen_status = sel.value; td.className = cls(sel.value); if (onChange) onChange(); });
+  td.append(sel);
+  return td;
+}
 function rowsTable(rows, { editable = false, onChange, onRemove, media } = {}) {
   const pairs = [];
   const starts = new Map(groupSpans(rows));
@@ -711,7 +725,7 @@ function rowsTable(rows, { editable = false, onChange, onRemove, media } = {}) {
       tr.append(h('td', { rowspan: sp }, r.store_no ?? ''), h('td', { rowspan: sp, class: 'l' }, r.store_name));
     }
     tr.append(h('td', null, r.screen_count), h('td', null, r.province), h('td', null, r.screen_type), h('td', null, r.shelf || '-'),
-      h('td', null, r.res || '-'), h('td', null, r.device_id), h('td', { class: 'online' }, r.screen_status));
+      h('td', null, r.res || '-'), h('td', null, r.device_id), statusCell(r, editable, onChange));
     if (media) {
       if (i === 0) tr.append(h('td', { colspan: 2, rowspan: mediaSpan, class: 'mediacell' },
         media.imgSrc ? h('img', { src: media.imgSrc, alt: 'รูปสื่อ' }) : h('span', { class: 'muted' }, '(ไม่มีรูป)')));
@@ -1431,7 +1445,9 @@ function openImportGroup(t) {
   const hasShelf = () => hasShelfBase || fileHasShelf;
   let dupIds = new Set();   // Device ID ที่ซ้ำกันในไฟล์ (คนละจอใช้ ID เดียวกัน) -> ห้ามใช้ ID นี้จับว่าเป็นจอเดิม
   const dn = x => clean(x).toLowerCase().replace(/\s+/g, '');
-  const findExisting = it => state.roster.find(r => r.screen_type === t.name && (it.device_id && !dupIds.has(dn(it.device_id)) ? dn(r.device_id) === dn(it.device_id) : (lc(r.store_name) === lc(it.store_name) && (r.shelf || '') === (it.shelf || ''))));
+  // หาจอเดิมที่ตรงกัน: ข้ามจอที่แถวก่อนหน้าในไฟล์เดียวกันจับไปแล้ว (used) -> 2 แถวที่หน้าตาเหมือนกันจะไม่ทับกันเหลือจอเดียว
+  const findExisting = (it, used) => state.roster.find(r => r.screen_type === t.name && !(used && used.has(r.id)) && (it.device_id && !dupIds.has(dn(it.device_id)) ? dn(r.device_id) === dn(it.device_id) : (lc(r.store_name) === lc(it.store_name) && (r.shelf || '') === (it.shelf || ''))));
+  const assign = list => { const used = new Set(), mp = new Map(); for (const it of list) { const ex = findExisting({ ...it, shelf: finalShelf(it) || '' }, used); if (ex) { used.add(ex.id); mp.set(it, ex); } } return mp; };
   const build = rows => {
     warn = [];
     items = rows.map(r => {
@@ -1458,13 +1474,13 @@ function openImportGroup(t) {
   const finalShelf = it => it.choice === 'new' ? it.guess : (it.choice === 'skip' ? '' : it.choice);
   const drawOut = () => {
     const act = items.filter(it => resolved(it) && it.choice !== 'skip');
-    const exist = act.filter(it => findExisting({ ...it, shelf: finalShelf(it) })).length;
+    const asg = assign(act), exist = asg.size;
     const need = items.filter(it => !resolved(it)).length, skip = items.filter(it => it.choice === 'skip').length;
     sum.textContent = items.length ? `เพิ่มใหม่ ${act.length - exist} • อัปเดตทับ ${exist} • ต้องเลือก Shelf ${need} • ข้าม ${skip}` : '';
     out.replaceChildren(
       warn.length ? h('div', { class: 'note warn' }, uniqList(warn).join(' • ')) : null,
       ...items.slice(0, 300).map(it => {
-        const isUpd = !!findExisting({ ...it, shelf: finalShelf(it) });
+        const isUpd = asg.has(it);
         return h('div', { class: 'rv' },
           h('div', { class: 'nm' }, h('b', null, it.store_name), h('div', { class: 'hint' }, [it.province, it.device_id, it.res && 'Resolution ' + it.res, it.tags.join('+')].filter(Boolean).join(' • ') || it.raw)),
           h('span', { class: 'badge' + (isUpd ? ' tag' : '') }, isUpd ? 'อัปเดต' : 'ใหม่'),
@@ -1492,10 +1508,10 @@ function openImportGroup(t) {
     try {
       const newShelves = uniqList(act.filter(it => it.choice === 'new').map(it => it.guess));
       if (newShelves.length) await api.typeUpdate(state.brand, t.name, { shelves: uniqList([...t.shelves, ...newShelves]) });
-      const ins = [], upd = [];
+      const ins = [], upd = [], asg = assign(act);
       for (const it of act) {
         const shelf = finalShelf(it) || '';
-        const ex = findExisting({ ...it, shelf });
+        const ex = asg.get(it);
         if (ex) {
           const p = { shelf };
           if (it.province) p.province = it.province; if (it.status) p.screen_status = it.status; if (it.res) p.res = it.res;

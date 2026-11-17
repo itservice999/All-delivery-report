@@ -44,6 +44,8 @@ table.sheet th,table.sheet td{border:1px solid #bdbdbd;text-align:center;padding
 table.sheet th{background:var(--head);color:var(--ink);font-weight:700}
 table.sheet td.l{text-align:left}
 table.sheet td.online{color:var(--ok);font-weight:700;font-style:italic}
+table.sheet td.offline{color:#c0392b;font-weight:700;font-style:italic}
+table.sheet select.stsel{font:inherit;color:inherit;font-weight:inherit;font-style:inherit;background:transparent;border:1px solid var(--line,#ccc);border-radius:6px;padding:2px 4px;max-width:96px}
 table.sheet td.mediacell{padding:4px;background:#fff;min-width:190px}
 table.sheet td.mediacell img{max-width:100%;max-height:170px;display:block;margin:auto}
 table.sheet input[type=text]{width:100%;min-width:160px;border:1px solid var(--line);border-radius:6px;padding:4px 8px}
@@ -128,6 +130,9 @@ table .chips{flex-wrap:wrap}
   .modal{max-height:94vh;border-radius:14px 14px 0 0}
   th,td{padding:6px 8px}
 }
+/* ตารางในหน้าต่างป๊อปอัป: ใช้แถบเลื่อนของหน้าต่างชั้นเดียว (กันแถวสุดท้ายซ่อนอยู่ในกรอบตารางที่เลื่อนซ้อนกัน) */
+.modal .tablewrap{max-height:none;overflow:visible;border:0}
+.modal .tablewrap table{border-radius:10px}
 @media print{header,.noprint{display:none}}
 </style>
 </head>
