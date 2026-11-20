@@ -18,7 +18,7 @@ const state = {
 // replaceChildren แสดง null/false เป็นข้อความ "null"/"false" -> กรองออกก่อนเสมอ
 { const _rc = Element.prototype.replaceChildren;
   Element.prototype.replaceChildren = function (...a) { return _rc.apply(this, a.flat(Infinity).filter(x => x != null && x !== false)); }; }
-const APP_VERSION = '2026-11-17.3';   // เปลี่ยนทุกครั้งที่ปล่อยไฟล์ใหม่ ใช้เช็กว่าเว็บรันไฟล์ตัวไหนอยู่
+const APP_VERSION = '2026-11-20.3';   // เปลี่ยนทุกครั้งที่ปล่อยไฟล์ใหม่ ใช้เช็กว่าเว็บรันไฟล์ตัวไหนอยู่
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props || {})) {
@@ -1437,12 +1437,14 @@ function openCreateGroup() {
 
 /* ---------- Import ไฟล์รายชื่อจอเข้ากรุ๊ป ---------- */
 function openImportGroup(t) {
-  const hasShelfBase = t.shelves.length > 0 || ['Acc Wall', 'Digital Poster'].includes(t.name);
+  const nameHint = ['Acc Wall'].includes(t.name);
+  let fromFile = false;   // นำเข้าจากไฟล์: ถ้าไฟล์ไม่มี Shelf เลย และกรุ๊ปไม่มี Shelf -> ไม่บังคับเลือก Shelf
+  const hasShelfBase = t.shelves.length > 0 || nameHint;
   const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   let items = [], fileHasShelf = false, warn = [];
   const ta = h('textarea', { placeholder: 'หรือวางชื่อสาขาที่นี่ 1 บรรทัดต่อ 1 จอ' + (hasShelfBase ? ' เช่น\nOne Bangkok จอซ้าย' : ''), maxlength: 60000 });
   const out = h('div'), sum = h('span', { class: 'sp' });
-  const hasShelf = () => hasShelfBase || fileHasShelf;
+  const hasShelf = () => t.shelves.length > 0 || fileHasShelf || (nameHint && !fromFile);
   let dupIds = new Set();   // Device ID ที่ซ้ำกันในไฟล์ (คนละจอใช้ ID เดียวกัน) -> ห้ามใช้ ID นี้จับว่าเป็นจอเดิม
   const dn = x => clean(x).toLowerCase().replace(/\s+/g, '');
   // หาจอเดิมที่ตรงกัน: ข้ามจอที่แถวก่อนหน้าในไฟล์เดียวกันจับไปแล้ว (used) -> 2 แถวที่หน้าตาเหมือนกันจะไม่ทับกันเหลือจอเดียว
@@ -1470,13 +1472,13 @@ function openImportGroup(t) {
       if (dupIds.size) warn.push(`Device ID ซ้ำกันในไฟล์ ${dupIds.size} ค่า (${[...dupIds].slice(0, 5).join(', ')}${dupIds.size > 5 ? ' …' : ''}) กรุณาแก้ในไฟล์ให้ไม่ซ้ำ ระบบจะไม่ใช้ ID เหล่านี้จับจอเดิม จะใช้ชื่อสาขา+Shelf แทน`); }
     drawOut();
   };
-  const resolved = it => !hasShelf() || (it.choice && it.choice !== '');
+  const resolved = () => true;   // Shelf ไม่บังคับ: ไม่เลือก = ไม่มี Shelf
   const finalShelf = it => it.choice === 'new' ? it.guess : (it.choice === 'skip' ? '' : it.choice);
   const drawOut = () => {
     const act = items.filter(it => resolved(it) && it.choice !== 'skip');
     const asg = assign(act), exist = asg.size;
     const need = items.filter(it => !resolved(it)).length, skip = items.filter(it => it.choice === 'skip').length;
-    sum.textContent = items.length ? `เพิ่มใหม่ ${act.length - exist} • อัปเดตทับ ${exist} • ต้องเลือก Shelf ${need} • ข้าม ${skip}` : '';
+    sum.textContent = items.length ? `เพิ่มใหม่ ${act.length - exist} • อัปเดตทับ ${exist} • ข้าม ${skip}` : '';
     out.replaceChildren(
       warn.length ? h('div', { class: 'note warn' }, uniqList(warn).join(' • ')) : null,
       ...items.slice(0, 300).map(it => {
@@ -1485,7 +1487,7 @@ function openImportGroup(t) {
           h('div', { class: 'nm' }, h('b', null, it.store_name), h('div', { class: 'hint' }, [it.province, it.device_id, it.res && 'Resolution ' + it.res, it.tags.join('+')].filter(Boolean).join(' • ') || it.raw)),
           h('span', { class: 'badge' + (isUpd ? ' tag' : '') }, isUpd ? 'อัปเดต' : 'ใหม่'),
           hasShelf() ? h('select', { 'aria-label': 'Shelf', onChange: e => { it.choice = e.target.value; drawOut(); } },
-            [['', '-- เลือก Shelf --'], ...t.shelves.map(s => [s, 'Shelf ' + s]), ...(it.guess ? [['new', `สร้าง Shelf ใหม่: ${it.guess}`]] : []), ['skip', 'ข้ามแถวนี้']].map(([v, l]) => h('option', { value: v, selected: it.choice === v }, l))) : null);
+            [['', '-- ไม่ระบุ Shelf --'], ...t.shelves.map(s => [s, 'Shelf ' + s]), ...(it.guess ? [['new', `สร้าง Shelf ใหม่: ${it.guess}`]] : []), ['skip', 'ข้ามแถวนี้']].map(([v, l]) => h('option', { value: v, selected: it.choice === v }, l))) : null);
       }), items.length > 300 ? h('div', { class: 'hint' }, `แสดง 300 แถวแรกจาก ${items.length} (ทุกแถวถูกนำเข้า)`) : null);
   };
   const file = h('input', { type: 'file', accept: '.xlsx', onChange: async e => {
@@ -1494,7 +1496,7 @@ function openImportGroup(t) {
     try {
       const r = await parseRosterFile(fl);
       if (!r) return out.replaceChildren(h('div', { class: 'note warn' }, 'ไม่พบหัวตารางที่มีคอลัมน์ Store Name (หรือ ชื่อสาขา) ในไฟล์นี้'));
-      fileHasShelf = r.rows.some(x => clean(x.shelf));   // มี Shelf จริงอย่างน้อย 1 แถวเท่านั้น (หัวคอลัมน์ว่างไม่นับ)
+      fromFile = true; fileHasShelf = r.rows.some(x => clean(x.shelf));   // มี Shelf จริงอย่างน้อย 1 แถวเท่านั้น (หัวคอลัมน์ว่างไม่นับ)
       out.dataset.sheet = r.sheet; build(r.rows);
       toast(`อ่านแท็บ "${r.sheet}" ได้ ${r.rows.length} แถว`);
     } catch (err) { out.replaceChildren(h('div', { class: 'note warn' }, 'อ่านไฟล์ไม่สำเร็จ: ' + errMsg(err))); }
@@ -1534,7 +1536,7 @@ function openImportGroup(t) {
       h('div', { class: 'f' }, ta), h('div', { class: 'row' }, h('button', { class: 'btn', onClick: () => {
         const lines = ta.value.split(/\r?\n/).map(clean).filter(Boolean);
         if (!lines.length) return toast('ยังไม่มีข้อความให้ตรวจ', true);
-        fileHasShelf = false; build(lines.map(l => ({ store_name: l, province: '', device_id: '', screen_status: '', res: '', shelf: '', tagText: '', screen_count: 1 })));
+        fromFile = false; fileHasShelf = false; build(lines.map(l => ({ store_name: l, province: '', device_id: '', screen_status: '', res: '', shelf: '', tagText: '', screen_count: 1 })));
       } }, 'ตรวจสอบข้อความที่วาง')), out],
     footer: [sum, h('button', { class: 'btn', onClick: () => m.close() }, 'ปิด'), goBtn] });
 }
